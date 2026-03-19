@@ -94,6 +94,16 @@ extern rmt_block_mem_t RMTMEM;
 // spinlock for protecting the critical section at frame start
 static portMUX_TYPE frame_start_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
+// Tracks whether a LEH GPIO ISR handler was installed by the LCD driver.
+static bool leh_isr_handler_installed = false;
+
+// GPIO ISR for LEH loopback: forwards rising-edge events to the board callback.
+static IRAM_ATTR void leh_gpio_isr_handler(void* arg) {
+    if (lcd.config.leh_isr_fn != NULL) {
+        lcd.config.leh_isr_fn(lcd.config.leh_arg);
+    }
+}
+
 typedef struct {
     lcd_hal_context_t hal;
     intr_handle_t vsync_intr;
@@ -350,12 +360,30 @@ static esp_err_t init_bus_gpio() {
             DATA_LINES[i], LCD_PERIPH_SIGNALS.panels[0].data_sigs[i], false, false
         );
     }
-    gpio_hal_func_sel(&hal, lcd.config.bus.leh, PIN_FUNC_GPIO);
-    gpio_set_direction(lcd.config.bus.leh, GPIO_MODE_OUTPUT);
     gpio_hal_func_sel(&hal, lcd.config.bus.clock, PIN_FUNC_GPIO);
     gpio_set_direction(lcd.config.bus.clock, GPIO_MODE_OUTPUT);
     gpio_hal_func_sel(&hal, lcd.config.bus.start_pulse, PIN_FUNC_GPIO);
     gpio_set_direction(lcd.config.bus.start_pulse, GPIO_MODE_OUTPUT);
+
+    // LEH (HSYNC) — if a per-line ISR callback is registered, configure the
+    // GPIO as input+output so the GPIO ISR can trigger on the LCD-generated
+    // HSYNC edge.  Otherwise, output-only is sufficient.
+    gpio_hal_func_sel(&hal, lcd.config.bus.leh, PIN_FUNC_GPIO);
+    if (lcd.config.leh_isr_fn != NULL) {
+        gpio_set_direction(lcd.config.bus.leh, GPIO_MODE_INPUT_OUTPUT);
+        gpio_set_intr_type(lcd.config.bus.leh, GPIO_INTR_POSEDGE);
+        // gpio_install_isr_service may already have been called by the user;
+        // ignore ESP_ERR_INVALID_STATE in that case.
+        esp_err_t isr_ret = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+        if (isr_ret == ESP_OK || isr_ret == ESP_ERR_INVALID_STATE) {
+            gpio_isr_handler_add(lcd.config.bus.leh, leh_gpio_isr_handler, NULL);
+            leh_isr_handler_installed = true;
+        } else {
+            ESP_LOGE(TAG, "failed to install GPIO ISR service for LEH: %d", isr_ret);
+        }
+    } else {
+        gpio_set_direction(lcd.config.bus.leh, GPIO_MODE_OUTPUT);
+    }
 
     esp_rom_gpio_connect_out_signal(
         lcd.config.bus.leh, LCD_PERIPH_SIGNALS.panels[0].hsync_sig, false, false
@@ -367,12 +395,19 @@ static esp_err_t init_bus_gpio() {
         lcd.config.bus.start_pulse, LCD_PERIPH_SIGNALS.panels[0].de_sig, false, false
     );
 
-    gpio_config_t vsync_gpio_conf = {
-        .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = 1ull << lcd.config.bus.stv,
-    };
-    gpio_config(&vsync_gpio_conf);
-    gpio_set_level(lcd.config.bus.stv, 1);
+    // STV — optional callback overrides direct GPIO control.
+    if (lcd.config.stv_set_fn != NULL) {
+        // STV controlled via board callback; nothing to configure here.
+        // Call the callback to ensure STV starts HIGH.
+        lcd.config.stv_set_fn(true, lcd.config.stv_arg);
+    } else {
+        gpio_config_t vsync_gpio_conf = {
+            .mode = GPIO_MODE_OUTPUT,
+            .pin_bit_mask = 1ull << lcd.config.bus.stv,
+        };
+        gpio_config(&vsync_gpio_conf);
+        gpio_set_level(lcd.config.bus.stv, 1);
+    }
     return ESP_OK;
 }
 
@@ -384,10 +419,17 @@ static void deinit_bus_gpio() {
         gpio_reset_pin(lcd.config.bus.data[i]);
     }
 
+    if (leh_isr_handler_installed) {
+        gpio_isr_handler_remove(lcd.config.bus.leh);
+        leh_isr_handler_installed = false;
+    }
     gpio_reset_pin(lcd.config.bus.leh);
     gpio_reset_pin(lcd.config.bus.clock);
     gpio_reset_pin(lcd.config.bus.start_pulse);
-    gpio_reset_pin(lcd.config.bus.stv);
+
+    if (lcd.config.stv_set_fn == NULL) {
+        gpio_reset_pin(lcd.config.bus.stv);
+    }
 }
 
 /**
@@ -695,15 +737,21 @@ void IRAM_ATTR epd_lcd_start_frame() {
     // enter a critical section to ensure the frame start timing is correct
     taskENTER_CRITICAL(&frame_start_spinlock);
 
-    // delay 1us is sufficient for DMA to pass data to LCD FIFO
-    // in fact, this is only needed when LCD pixel clock is set too high
-    gpio_set_level(lcd.config.bus.stv, 0);
-    // esp_rom_delay_us(1);
-    //  for picture clarity, it seems to be important to start CKV at a "good"
-    //  time, seemingly start or towards end of line.
+    // Pulse STV LOW for one line period to reset the EPD vertical shift register.
+    // When stv_set_fn is set (e.g. shift-register boards), use it instead of
+    // direct GPIO to avoid requiring hardware modification.
+    if (lcd.config.stv_set_fn != NULL) {
+        lcd.config.stv_set_fn(false, lcd.config.stv_arg);
+    } else {
+        gpio_set_level(lcd.config.bus.stv, 0);
+    }
     start_ckv_cycles(initial_lines + 5);
     esp_rom_delay_us(lcd.line_length_us);
-    gpio_set_level(lcd.config.bus.stv, 1);
+    if (lcd.config.stv_set_fn != NULL) {
+        lcd.config.stv_set_fn(true, lcd.config.stv_arg);
+    } else {
+        gpio_set_level(lcd.config.bus.stv, 1);
+    }
     esp_rom_delay_us(lcd.line_length_us);
     esp_rom_delay_us(lcd.config.ckv_high_time / 10);
 

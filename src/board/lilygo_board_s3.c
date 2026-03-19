@@ -249,11 +249,29 @@ static void epd_board_poweroff(epd_ctrl_state_t* state) {
 }
 
 static float epd_board_ambient_temperature() {
-    return 20;
+    return (float)tps_read_thermistor(config_reg.port);
 }
 
 static void set_vcom(int value) {
     vcom = value;
+}
+
+static esp_err_t gpio_set_direction_s3(int pin, bool make_input) {
+    static uint8_t direction = 0;
+    uint8_t mask = ~(1 << pin);
+    direction = (direction & mask) | ((uint8_t)make_input << pin);
+    return pca9555_set_config(config_reg.port, direction, 0);
+}
+
+static bool gpio_read_s3(int pin) {
+    return (pca9555_read_input(config_reg.port, 0) >> pin) & 1;
+}
+
+static esp_err_t gpio_write_s3(int pin, bool value) {
+    static uint8_t state = 0;
+    uint8_t mask = ~(1 << pin);
+    state = (state & mask) | ((uint8_t)value << pin);
+    return pca9555_set_value(config_reg.port, state, 0);
 }
 
 const EpdBoardDefinition lilygo_board_s3 = {
@@ -266,8 +284,7 @@ const EpdBoardDefinition lilygo_board_s3 = {
     .get_temperature = epd_board_ambient_temperature,
     .set_vcom = set_vcom,
 
-    // unimplemented for now, but shares v6 implementation
-    .gpio_set_direction = NULL,
-    .gpio_read = NULL,
-    .gpio_write = NULL,
+    .gpio_set_direction = gpio_set_direction_s3,
+    .gpio_read = gpio_read_s3,
+    .gpio_write = gpio_write_s3,
 };

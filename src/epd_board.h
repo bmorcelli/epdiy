@@ -120,6 +120,10 @@ void epd_control_reg_deinit();
 extern const EpdBoardDefinition epd_board_lilygo_t5_47;
 extern const EpdBoardDefinition epd_board_lilygo_t5_47_touch;
 extern const EpdBoardDefinition lilygo_board_s3;
+/** LilyGo T5 S3 E-Paper Pro H752 (shift-register power control, 8-bit LCD bus).*/
+extern const EpdBoardDefinition epd_board_lilygo_t5_s3;
+/** LilyGo T5 S3 E-Paper Pro H752 variant that keeps touch controller powered. */
+extern const EpdBoardDefinition epd_board_lilygo_t5_s3_touch;
 extern const EpdBoardDefinition epd_board_v2_v3;
 extern const EpdBoardDefinition epd_board_v4;
 extern const EpdBoardDefinition epd_board_v5;
