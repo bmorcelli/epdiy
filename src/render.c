@@ -23,6 +23,7 @@
 #include "output_common/render_context.h"
 #include "output_common/render_method.h"
 #include "output_i2s/render_i2s.h"
+#include "output_i80/render_i80.h"
 #include "output_lcd/render_lcd.h"
 
 static inline int min(int x, int y) {
@@ -48,6 +49,8 @@ void epd_push_pixels(EpdRect area, short time, int color) {
     render_context.area = area;
 #ifdef RENDER_METHOD_LCD
     epd_push_pixels_lcd(&render_context, time, color);
+#elif defined(RENDER_METHOD_I80)
+    epd_push_pixels_i80(&render_context, area, time, color);
 #else
     epd_push_pixels_i2s(&render_context, area, time, color);
 #endif
@@ -183,6 +186,8 @@ enum EpdDrawError IRAM_ATTR epd_draw_base(
     i2s_do_update(&render_context);
 #elif defined(RENDER_METHOD_LCD)
     lcd_do_update(&render_context);
+#elif defined(RENDER_METHOD_I80)
+    i80_do_update(&render_context);
 #endif
 
     if (render_context.error & EPD_DRAW_EMPTY_LINE_QUEUE) {
@@ -208,6 +213,12 @@ static void IRAM_ATTR render_thread(void* arg) {
             i2s_fetch_frame_data(&render_context, thread_id);
         } else {
             i2s_output_frame(&render_context, thread_id);
+        }
+#elif defined(RENDER_METHOD_I80)
+        if (thread_id == 0) {
+            i80_fetch_frame_data(&render_context, thread_id);
+        } else {
+            i80_output_frame(&render_context, thread_id);
         }
 #endif
 
@@ -303,7 +314,7 @@ void epd_renderer_init(enum EpdInitOptions options) {
 
 #ifdef RENDER_METHOD_LCD
     size_t queue_elem_size = render_context.display_width / 4;
-#elif defined(RENDER_METHOD_I2S)
+#elif defined(RENDER_METHOD_I2S) || defined(RENDER_METHOD_I80)
     size_t queue_elem_size = render_context.display_width;
 #endif
 
@@ -339,6 +350,8 @@ void epd_renderer_deinit() {
 
 #ifdef RENDER_METHOD_I2S
     i2s_deinit();
+#elif defined(RENDER_METHOD_I80)
+    i80_deinit();
 #endif
 
     epd_control_reg_deinit();
@@ -396,7 +409,7 @@ __attribute__((optimize("O3"))) bool _epd_interlace_line(
     uint8_t* col_dirtyness,
     int fb_width
 ) {
-#ifdef RENDER_METHOD_I2S
+#if defined(RENDER_METHOD_I2S) || defined(RENDER_METHOD_I80)
     return _interlace_line_unaligned(to, from, interlaced, col_dirtyness, fb_width) > 0;
 #elif defined(RENDER_METHOD_LCD)
     // Use Vector Extensions with the ESP32-S3.

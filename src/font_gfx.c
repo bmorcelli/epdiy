@@ -1,29 +1,24 @@
 #include "font_gfx.h"
 #include "gfxfont.h"
 #include "fonts/glcdfont.h"
+#include "epdiy.h"
 
 #include <stdint.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------------
  * Internal helper: set a single 4-bit pixel in the epdiy framebuffer.
- * epdiy packs two pixels per byte: high nibble = even column, low nibble = odd.
- * color is a full byte where only the upper nibble matters (epdiy convention),
- * but we accept 0-255 and use bits [7:4].
+ * Delegates to epd_draw_pixel so that:
+ *   1. The current display rotation is applied.
+ *   2. The nibble-packing convention matches the rest of epdiy
+ *      (lower nibble = even x, upper nibble = odd x).
+ * fb_width is kept as a parameter for API compatibility but is unused here
+ * (epd_draw_pixel uses epd_width() internally).
+ * color: epdiy convention — only the upper nibble [7:4] carries the value.
  * ------------------------------------------------------------------------- */
 static inline void set_pixel(int x, int y, uint8_t color, int fb_width, uint8_t* fb) {
-    if (x < 0 || y < 0 || x >= fb_width)
-        return;
-
-    /* Pack nibble: upper nibble for even x, lower nibble for odd x. */
-    int byte_index = (y * fb_width + x) / 2;
-    uint8_t nibble = (color >> 4) & 0x0F;
-
-    if (x & 1) {
-        fb[byte_index] = (fb[byte_index] & 0xF0) | nibble;
-    } else {
-        fb[byte_index] = (fb[byte_index] & 0x0F) | (nibble << 4);
-    }
+    (void)fb_width;
+    epd_draw_pixel(x, y, color, fb);
 }
 
 /* -------------------------------------------------------------------------

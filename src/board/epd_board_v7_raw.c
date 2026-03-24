@@ -14,7 +14,9 @@
 #include "tps65185.h"
 
 #include <driver/gpio.h>
-#include <driver/i2c.h>
+#include <driver/i2c_master.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <sdkconfig.h>
 
 // Make this compile on the ESP32 without ifdefing the whole file
@@ -62,7 +64,7 @@
 #define CKH GPIO_NUM_4
 
 typedef struct {
-    i2c_port_t port;
+    i2c_master_bus_handle_t bus_handle;
     bool pwrup;
     bool vcom_ctrl;
     bool wakeup;
@@ -97,19 +99,18 @@ static lcd_bus_config_t lcd_config = { .clock = CKH,
 static void epd_board_init(uint32_t epd_row_width) {
     gpio_hold_dis(CKH);  // free CKH after wakeup
 
-    i2c_config_t conf;
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = CFG_SDA;
-    conf.scl_io_num = CFG_SCL;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = 100000;
-    conf.clk_flags = 0;
-    ESP_ERROR_CHECK(i2c_param_config(EPDIY_I2C_PORT, &conf));
-
-    ESP_ERROR_CHECK(i2c_driver_install(EPDIY_I2C_PORT, I2C_MODE_MASTER, 0, 0, 0));
-
-    config_reg.port = EPDIY_I2C_PORT;
+    // New I2C master driver API
+    i2c_master_bus_config_t bus_config = {
+        .i2c_port = EPDIY_I2C_PORT,
+        .sda_io_num = CFG_SDA,
+        .scl_io_num = CFG_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .intr_priority = 0,
+        .trans_queue_depth = 0,
+        .flags.enable_internal_pullup = true,
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &config_reg.bus_handle));
     config_reg.pwrup = false;
     config_reg.vcom_ctrl = false;
     config_reg.wakeup = false;
@@ -158,7 +159,7 @@ static void epd_board_deinit() {
     // Not sure why we need this delay, but the TPS65185 seems to generate an interrupt after some
     // time that needs to be cleared.
     vTaskDelay(50);
-    i2c_driver_delete(EPDIY_I2C_PORT);
+    ESP_ERROR_CHECK(i2c_del_master_bus(config_reg.bus_handle));
 
     gpio_uninstall_isr_service();
 }
@@ -229,15 +230,15 @@ static void epd_board_poweron(epd_ctrl_state_t* state) {
     }
     ESP_LOGI("v7_RAW", "PWRGOOD OK");
 
-    tps_set_vcom(config_reg.port, vcom);
+    tps_set_vcom(config_reg.bus_handle, vcom);
 
     int tries = 0;
-    while (!((tps_read_register(config_reg.port, TPS_REG_PG) & 0xFA) == 0xFA)) {
+    while (!((tps_read_register(config_reg.bus_handle, TPS_REG_PG) & 0xFA) == 0xFA)) {
         if (tries >= 500) {
             ESP_LOGE(
                 "epdiy",
                 "Power enable failed! PG status: %X",
-                tps_read_register(config_reg.port, TPS_REG_PG)
+                tps_read_register(config_reg.bus_handle, TPS_REG_PG)
             );
             return;
         }
@@ -264,7 +265,7 @@ static void epd_board_poweroff(epd_ctrl_state_t* state) {
 }
 
 static float epd_board_ambient_temperature() {
-    return tps_read_thermistor(EPDIY_I2C_PORT);
+    return tps_read_thermistor(config_reg.bus_handle);
 }
 
 static void set_vcom(int value) {

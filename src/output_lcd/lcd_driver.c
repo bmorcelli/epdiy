@@ -97,13 +97,6 @@ static portMUX_TYPE frame_start_spinlock = portMUX_INITIALIZER_UNLOCKED;
 // Tracks whether a LEH GPIO ISR handler was installed by the LCD driver.
 static bool leh_isr_handler_installed = false;
 
-// GPIO ISR for LEH loopback: forwards rising-edge events to the board callback.
-static IRAM_ATTR void leh_gpio_isr_handler(void* arg) {
-    if (lcd.config.leh_isr_fn != NULL) {
-        lcd.config.leh_isr_fn(lcd.config.leh_arg);
-    }
-}
-
 typedef struct {
     lcd_hal_context_t hal;
     intr_handle_t vsync_intr;
@@ -146,6 +139,13 @@ typedef struct {
 } s3_lcd_t;
 
 static s3_lcd_t lcd = { 0 };
+
+// GPIO ISR for LEH loopback: forwards rising-edge events to the board callback.
+static IRAM_ATTR void leh_gpio_isr_handler(void* arg) {
+    if (lcd.config.leh_isr_fn != NULL) {
+        lcd.config.leh_isr_fn(lcd.config.leh_arg);
+    }
+}
 
 void IRAM_ATTR epd_lcd_line_source_cb(line_cb_func_t line_source, void* payload) {
     lcd.line_source_cb = line_source;

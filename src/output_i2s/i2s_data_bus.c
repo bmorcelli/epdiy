@@ -300,4 +300,4 @@ void i2s_bus_deinit() {
     periph_module_disable(PERIPH_I2S1_MODULE);
 }
 
-#endif
+#endif  // CONFIG_IDF_TARGET_ESP32

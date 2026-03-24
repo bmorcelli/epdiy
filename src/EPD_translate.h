@@ -42,6 +42,11 @@
 #pragma once
 #ifdef __cplusplus
 
+#ifdef ARDUINO
+#include <Arduino.h>  // String, SPI types — must come before ESP-IDF headers
+#include <SPI.h>
+#endif
+
 #include "epdiy.h"
 #include "epd_highlevel.h"
 #include "epd_board.h"
@@ -126,18 +131,18 @@ public:
 
     /** Start a background FreeRTOS task that pushes the framebuffer every 500 ms. */
     void startCallback() {
-        if (task_handle_ != nullptr) return;
-        callback_active_ = true;
-        xTaskCreate(push_task, "epd_push", 4096, this, 1, &task_handle_);
+        // if (task_handle_ != nullptr) return;
+        // callback_active_ = true;
+        // xTaskCreate(push_task, "epd_push", 4096, this, 1, &task_handle_);
     }
 
     /** Stop the background push task. */
     void stopCallback() {
-        callback_active_ = false;
-        if (task_handle_ != nullptr) {
-            vTaskDelete(task_handle_);
-            task_handle_ = nullptr;
-        }
+        // callback_active_ = false;
+        // if (task_handle_ != nullptr) {
+        //     vTaskDelete(task_handle_);
+        //     task_handle_ = nullptr;
+        // }
     }
 
     /**
@@ -147,7 +152,12 @@ public:
     void epdPushImage() {
         changed_ = false;
         epd_poweron();
-        epd_clear_area_cycles(epd_full_screen(), 2, 50);
+        epd_clear_area(epd_full_screen());  // 3 cycles, standard timing
+        // Force a full GC16 drive: mark back_fb as all-black so the diff
+        // detects every pixel as changed.  Without this, areas where front_fb
+        // and back_fb are both white produce a zero-diff and are skipped by
+        // epd_hl_update_screen, leaving hardware ghosting from prior frames.
+        memset(hl_.back_fb, 0x00, (size_t)(epd_width() / 2 * epd_height()));
         epd_hl_update_screen(&hl_, MODE_GC16, temperature_);
         epd_poweroff();
     }
@@ -164,7 +174,11 @@ public:
     // -------------------------------------------------------------------------
 
     void setRotation(uint8_t r) {
-        epd_set_rotation((enum EpdRotation)(r & 0x03));
+        // The Launcher uses convention 0,2=portrait; 1,3=landscape for a
+        // landscape-native display.  epdiy uses EPD_ROT_LANDSCAPE=0 (no
+        // rotation) and EPD_ROT_PORTRAIT=1 (90° CW).  XOR-ing with 1 maps
+        // the two conventions: 0↔1 and 2↔3.
+        epd_set_rotation((enum EpdRotation)((r ^ 1) & 0x03));
     }
 
     uint8_t getRotation() {
