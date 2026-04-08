@@ -147,19 +147,46 @@ public:
 
     /**
      * Synchronously push the current framebuffer to the display.
-     * Use this when not using the async callback.
+     *
+     * Power management: the display is kept powered between consecutive calls
+     * to avoid repeated high-voltage rail charge/discharge cycles that cause
+     * brownout resets.  Power is cut only during the periodic deep clean.
+     *
+     * Update strategy:
+     *  - Normal frames: back_fb is zeroed (all-black) so the diff sees every
+     *    pixel as changed → full-screen MODE_GL16 (non-flashing, 16-gray).
+     *    Forcing a full-screen drive on every frame eliminates the GC16
+     *    partial-update artifact where non-updated rows get gray smearing.
+     *  - Every kFullRefreshInterval frames: hardware clear (epd_clear_area) +
+     *    full GC16 for a deep quality reset, then power is cycled once.
      */
     void epdPushImage() {
         changed_ = false;
-        epd_poweron();
-        epd_clear_area(epd_full_screen());  // 3 cycles, standard timing
-        // Force a full GC16 drive: mark back_fb as all-black so the diff
-        // detects every pixel as changed.  Without this, areas where front_fb
-        // and back_fb are both white produce a zero-diff and are skipped by
-        // epd_hl_update_screen, leaving hardware ghosting from prior frames.
-        memset(hl_.back_fb, 0x00, (size_t)(epd_width() / 2 * epd_height()));
-        epd_hl_update_screen(&hl_, MODE_GC16, temperature_);
-        epd_poweroff();
+        int fb_size = epd_width() / 2 * epd_height();
+
+        if (update_count_++ % kFullRefreshInterval == 0) {
+            // Deep clean: power cycle + hardware clear + full GC16.
+            if (is_powered_) {
+                epd_poweroff();
+                is_powered_ = false;
+            }
+            epd_poweron();
+            is_powered_ = true;
+            epd_clear_area(epd_full_screen());
+            memset(hl_.back_fb, 0x00, (size_t)fb_size);
+            epd_hl_update_screen(&hl_, MODE_GC16, temperature_);
+            epd_poweroff();
+            is_powered_ = false;
+        } else {
+            // Normal update: power on once (no-op if already on), then drive
+            // every pixel with GL16 by pretending back_fb is all-black.
+            if (!is_powered_) {
+                epd_poweron();
+                is_powered_ = true;
+            }
+            memset(hl_.back_fb, 0x00, (size_t)fb_size);
+            epd_hl_update_screen(&hl_, MODE_GL16, temperature_);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -585,6 +612,11 @@ private:
     const EpdFont* epd_font_ = nullptr;
 
     int      temperature_ = 25;
+
+    // Deep-clean (GC16 + hardware clear) every N calls.
+    static constexpr int kFullRefreshInterval = 20;
+    int  update_count_ = 1;   // Start at 1 so the first call uses GL16.
+    bool is_powered_   = false;
 
     volatile bool changed_      = false;
     bool          callback_active_ = false;
