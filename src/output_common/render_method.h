@@ -5,16 +5,21 @@
 /**
  * Rendering Method / Hardware to use.
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum EpdRenderMethod {
     /// Use the I2S peripheral on ESP32 chips.
-    RENDER_METHOD_I2S = 1,
+    EPD_RENDER_METHOD_I2S = 1,
     /// Use the CAM/LCD peripheral in ESP32-S3 chips.
-    RENDER_METHOD_LCD = 2,
+    EPD_RENDER_METHOD_LCD = 2,
     /// Use the Intel 8080 (i80) parallel bus on ESP32-S3 chips.
-    RENDER_METHOD_I80 = 3,
+    EPD_RENDER_METHOD_I80 = 3,
 };
 
-extern const enum EpdRenderMethod EPD_CURRENT_RENDER_METHOD;
+extern enum EpdRenderMethod EPD_CURRENT_RENDER_METHOD;
+void epd_set_render_method(enum EpdRenderMethod method);
 
 #ifdef CONFIG_IDF_TARGET_ESP32
 #define RENDER_METHOD_I2S 1
@@ -27,7 +32,10 @@ extern const enum EpdRenderMethod EPD_CURRENT_RENDER_METHOD;
  *
  * Without this flag the default RGB LCD streaming path is used.
  */
-#if defined(EPDIY_RENDER_I80)
+#if defined(EPDIY_RENDER_DUAL_S3)
+#define RENDER_METHOD_LCD 1
+#define RENDER_METHOD_I80 1
+#elif defined(EPDIY_RENDER_I80)
 #define RENDER_METHOD_I80 1
 #else
 #define RENDER_METHOD_LCD 1
@@ -40,4 +48,8 @@ extern const enum EpdRenderMethod EPD_CURRENT_RENDER_METHOD;
 #define IRAM_ATTR
 // define this if we're using clangd to make it accept the GCC builtin
 void __assert_func(const char* file, int line, const char* func, const char* failedexpr);
+#endif
+
+#ifdef __cplusplus
+}
 #endif

@@ -537,6 +537,12 @@ int epd_height() {
 
 void epd_set_lcd_pixel_clock_MHz(int frequency) {
 #ifdef RENDER_METHOD_LCD
+#ifdef RENDER_METHOD_I80
+    if (EPD_CURRENT_RENDER_METHOD != EPD_RENDER_METHOD_LCD) {
+        ESP_LOGW("epdiy", "called set_lcd_pixel_clock_MHz while current render method is not LCD");
+        return;
+    }
+#endif
     void epd_lcd_set_pixel_clock_MHz(int frequency);
     epd_lcd_set_pixel_clock_MHz(frequency);
 #else

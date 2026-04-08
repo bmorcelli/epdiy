@@ -443,7 +443,7 @@ LutFunctionPair find_lut_functions(enum EpdDrawMode mode, uint32_t lut_size) {
     pair.lookup_func = NULL;
 
     if (mode & MODE_PACKING_1PPB_DIFFERENCE) {
-        if (EPD_CURRENT_RENDER_METHOD == RENDER_METHOD_LCD && !(mode & MODE_FORCE_NO_PIE)
+        if (EPD_CURRENT_RENDER_METHOD == EPD_RENDER_METHOD_LCD && !(mode & MODE_FORCE_NO_PIE)
             && lut_size >= 1024) {
             pair.build_func = &build_1ppB_lut_S3_VE_1k;
             pair.lookup_func = &calc_epd_input_1ppB_1k_S3_VE;

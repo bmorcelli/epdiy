@@ -45,9 +45,35 @@ const int clear_cycle_time = 12;
 
 static RenderContext_t render_context;
 
+static inline bool epd_render_uses_lcd(void) {
+#if defined(RENDER_METHOD_LCD) && defined(RENDER_METHOD_I80)
+    return EPD_CURRENT_RENDER_METHOD == EPD_RENDER_METHOD_LCD;
+#elif defined(RENDER_METHOD_LCD)
+    return true;
+#else
+    return false;
+#endif
+}
+
+static inline bool epd_render_uses_i80(void) {
+#if defined(RENDER_METHOD_I80) && defined(RENDER_METHOD_LCD)
+    return EPD_CURRENT_RENDER_METHOD == EPD_RENDER_METHOD_I80;
+#elif defined(RENDER_METHOD_I80)
+    return true;
+#else
+    return false;
+#endif
+}
+
 void epd_push_pixels(EpdRect area, short time, int color) {
     render_context.area = area;
-#ifdef RENDER_METHOD_LCD
+#if defined(RENDER_METHOD_LCD) && defined(RENDER_METHOD_I80)
+    if (epd_render_uses_lcd()) {
+        epd_push_pixels_lcd(&render_context, time, color);
+    } else {
+        epd_push_pixels_i80(&render_context, area, time, color);
+    }
+#elif defined(RENDER_METHOD_LCD)
     epd_push_pixels_lcd(&render_context, time, color);
 #elif defined(RENDER_METHOD_I80)
     epd_push_pixels_i80(&render_context, area, time, color);
@@ -141,7 +167,7 @@ enum EpdDrawError IRAM_ATTR epd_draw_base(
     }
 
 #ifdef RENDER_METHOD_LCD
-    if (mode & MODE_PACKING_1PPB_DIFFERENCE && render_context.conversion_lut_size > 1 << 10) {
+    if (epd_render_uses_lcd() && mode & MODE_PACKING_1PPB_DIFFERENCE && render_context.conversion_lut_size > 1 << 10) {
         ESP_LOGI(
             "epdiy",
             "Using optimized vector implementation on the ESP32-S3, only 1k of %d LUT in use!",
@@ -182,7 +208,13 @@ enum EpdDrawError IRAM_ATTR epd_draw_base(
         render_context.line_mask, drawn_columns, render_context.display_width / 4
     );
 
-#ifdef RENDER_METHOD_I2S
+#if defined(RENDER_METHOD_LCD) && defined(RENDER_METHOD_I80)
+    if (epd_render_uses_lcd()) {
+        lcd_do_update(&render_context);
+    } else {
+        i80_do_update(&render_context);
+    }
+#elif defined(RENDER_METHOD_I2S)
     i2s_do_update(&render_context);
 #elif defined(RENDER_METHOD_LCD)
     lcd_do_update(&render_context);
@@ -206,7 +238,15 @@ static void IRAM_ATTR render_thread(void* arg) {
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-#ifdef RENDER_METHOD_LCD
+#if defined(RENDER_METHOD_LCD) && defined(RENDER_METHOD_I80)
+        if (epd_render_uses_lcd()) {
+            lcd_calculate_frame(&render_context, thread_id);
+        } else if (thread_id == 0) {
+            i80_fetch_frame_data(&render_context, thread_id);
+        } else {
+            i80_output_frame(&render_context, thread_id);
+        }
+#elif defined(RENDER_METHOD_LCD)
         lcd_calculate_frame(&render_context, thread_id);
 #elif defined(RENDER_METHOD_I2S)
         if (thread_id == 0) {
@@ -265,7 +305,7 @@ void epd_renderer_init(enum EpdInitOptions options) {
         lut_size = 1 << 16;
     } else if (options == EPD_OPTIONS_DEFAULT) {
 #ifdef RENDER_METHOD_LCD
-        lut_size = 1 << 10;
+        lut_size = epd_render_uses_lcd() ? (1 << 10) : (1 << 16);
 #else
         lut_size = 1 << 16;
 #endif
@@ -312,7 +352,10 @@ void epd_renderer_init(enum EpdInitOptions options) {
         = heap_caps_aligned_alloc(16, epd_width() / 4, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     assert(render_context.line_mask != NULL);
 
-#ifdef RENDER_METHOD_LCD
+#if defined(RENDER_METHOD_LCD) && defined(RENDER_METHOD_I80)
+    size_t queue_elem_size
+        = epd_render_uses_lcd() ? (render_context.display_width / 4) : render_context.display_width;
+#elif defined(RENDER_METHOD_LCD)
     size_t queue_elem_size = render_context.display_width / 4;
 #elif defined(RENDER_METHOD_I2S) || defined(RENDER_METHOD_I80)
     size_t queue_elem_size = render_context.display_width;
@@ -348,7 +391,11 @@ void epd_renderer_deinit() {
         vSemaphoreDelete(render_context.feed_done_smphr[i]);
     }
 
-#ifdef RENDER_METHOD_I2S
+#if defined(RENDER_METHOD_LCD) && defined(RENDER_METHOD_I80)
+    if (epd_render_uses_i80()) {
+        i80_deinit();
+    }
+#elif defined(RENDER_METHOD_I2S)
     i2s_deinit();
 #elif defined(RENDER_METHOD_I80)
     i80_deinit();
@@ -409,7 +456,36 @@ __attribute__((optimize("O3"))) bool _epd_interlace_line(
     uint8_t* col_dirtyness,
     int fb_width
 ) {
-#if defined(RENDER_METHOD_I2S) || defined(RENDER_METHOD_I80)
+#if defined(RENDER_METHOD_LCD) && defined(RENDER_METHOD_I80)
+    if (!epd_render_uses_lcd()) {
+        return _interlace_line_unaligned(to, from, interlaced, col_dirtyness, fb_width) > 0;
+    }
+
+    uint32_t dirty = 0;
+
+    // alignment boundaries in pixels
+    int unaligned_len_front_px = ((16 - (uint32_t)to % 16) * 2) % 32;
+    int unaligned_len_back_px = (((uint32_t)to + fb_width / 2) % 16) * 2;
+    int unaligned_back_start_px = fb_width - unaligned_len_back_px;
+    int aligned_len_px = fb_width - unaligned_len_front_px - unaligned_len_back_px;
+
+    dirty |= _interlace_line_unaligned(to, from, interlaced, col_dirtyness, unaligned_len_front_px);
+    dirty |= epd_interlace_4bpp_line_VE(
+        to + unaligned_len_front_px / 2,
+        from + unaligned_len_front_px / 2,
+        interlaced + unaligned_len_front_px,
+        col_dirtyness + unaligned_len_front_px / 2,
+        aligned_len_px
+    );
+    dirty |= _interlace_line_unaligned(
+        to + unaligned_back_start_px / 2,
+        from + unaligned_back_start_px / 2,
+        interlaced + unaligned_back_start_px,
+        col_dirtyness + unaligned_back_start_px / 2,
+        unaligned_len_back_px
+    );
+    return dirty;
+#elif defined(RENDER_METHOD_I2S) || defined(RENDER_METHOD_I80)
     return _interlace_line_unaligned(to, from, interlaced, col_dirtyness, fb_width) > 0;
 #elif defined(RENDER_METHOD_LCD)
     // Use Vector Extensions with the ESP32-S3.
